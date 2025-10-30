@@ -1,0 +1,4 @@
+align
+data/__pycache__
+data/mnist
+data/usps
