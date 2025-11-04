@@ -35,9 +35,9 @@ class SplitDecoder(nn.Module):
     
 
 class LinearProbe(nn.Module):
-    def __init__(self, signal_dim=32, n_classes=10):
+    def __init__(self, input_dim=32, n_classes=10): # input dim can be signal or nuisance depending on use
         super().__init__()
-        self.net = nn.Linear(signal_dim, n_classes)
+        self.net = nn.Linear(input_dim, n_classes)
     
     def forward(self, z_sig):
         return self.net(z_sig)

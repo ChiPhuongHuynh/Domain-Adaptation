@@ -6,6 +6,7 @@ Measures distribution distance between two sets of samples.
 """
 
 import torch
+import torch.nn.functional as F
 
 def _rbf_kernel(x, y, sigma):
     """Compute RBF (Gaussian) kernel matrix."""
@@ -32,3 +33,21 @@ def mmd_rbf(X: torch.Tensor, Y: torch.Tensor, sigma: float = 1.0) -> torch.Tenso
     Kxy = _rbf_kernel(X, Y, sigma).mean()
 
     return Kxx + Kyy - 2 * Kxy
+
+def compute_pairwise_distances(x, y):
+    x_norm = (x ** 2).sum(dim=1).view(-1, 1)
+    y_norm = (y ** 2).sum(dim=1).view(1, -1)
+    return x_norm + y_norm - 2.0 * torch.mm(x, y.t())
+
+def gaussian_kernel(x, y, sigmas=[0.1, 1, 5, 10]):
+    D = compute_pairwise_distances(x, y)
+    kernels = [torch.exp(-D / (2 * sigma ** 2)) for sigma in sigmas]
+    return sum(kernels) / len(kernels)
+
+@torch.no_grad()
+def mmd_gaussian(x, y, sigmas=[0.1, 1, 5, 10]):
+    K_xx = gaussian_kernel(x, x, sigmas)
+    K_yy = gaussian_kernel(y, y, sigmas)
+    K_xy = gaussian_kernel(x, y, sigmas)
+    mmd = K_xx.mean() + K_yy.mean() - 2 * K_xy.mean()
+    return mmd.item()

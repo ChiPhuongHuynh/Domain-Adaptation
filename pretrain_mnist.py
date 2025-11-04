@@ -11,7 +11,7 @@ from models.models import SplitEncoder
 from models.models import SplitDecoder
 from models.models import LinearProbe
 from utils.seed import set_seed
-from utils.training import pretrain
+from utils.training import pretrain, pretrain_round_robin, pretrain_usage_swap
 
 set_seed(42)
 # ------------------------------------------------------------
@@ -37,11 +37,12 @@ num_classes = 10
 
 encoder = SplitEncoder(input_dim=input_dim, latent_dim=latent_dim, signal_dim=signal_dim).to(device)
 decoder = SplitDecoder(latent_dim=latent_dim, output_dim=output_dim).to(device)
-probe   = LinearProbe(signal_dim=signal_dim, n_classes=num_classes).to(device)
-
+probe   = LinearProbe(input_dim=signal_dim, n_classes=num_classes).to(device)
+label_probe = LinearProbe(input_dim=signal_dim, n_classes=num_classes).to(device)
 # ------------------------------------------------------------
 # 4. Training
 # ------------------------------------------------------------
+"""
 pretrain(
     encoder=encoder,
     decoder=decoder,
@@ -56,9 +57,12 @@ pretrain(
     lambda_cov_cycle=0.5,
     lambda_cycle_nuisance=1.0,
     epochs=20,
-    save_path="artifacts/mnist/mnist_pretrained.pt"
+    save_path="artifacts/mnist/mnist_pretrained_ssim.pt"
 )
-
+"""
+pretrain_usage_swap(
+    encoder, decoder, probe, train_loader, device,
+)
 # ------------------------------------------------------------
 # 5. Optional: evaluate probe accuracy on test set
 # ------------------------------------------------------------

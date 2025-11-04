@@ -1,7 +1,79 @@
 import torch
 import torch.nn.functional as F
+from torchmetrics.image import StructuralSimilarityIndexMeasure
 
 eps = 1e-6
+
+# ============================================
+# Label Adversarial Probe Loss for z_n
+# ============================================
+
+class GradReverse(torch.autograd.Function):
+    @staticmethod
+    def forward(ctx, x, lambd):
+        ctx.lambd = lambd
+        return x.view_as(x)
+    @staticmethod
+    def backward(ctx, grad_output):
+        return -ctx.lambd * grad_output, None
+
+def grad_reverse(x, lambd=1.0):
+    """Apply gradient reversal to x."""
+    return GradReverse.apply(x, lambd)
+
+def label_adversarial_probe_loss(probe_logits, true_labels):
+    """
+    Cross-entropy loss for the nuisance probe (predicting digit class from z_n).
+    During encoder update, gradients are reversed so that the encoder removes label info.
+
+    Args:
+        probe_logits: output of probe network (B x num_classes)
+        true_labels: ground-truth digit labels (0-9)
+    Returns:
+        loss tensor, metrics dict
+    """
+    ce = F.cross_entropy(probe_logits, true_labels)
+    return ce, {"adv_ce": ce.item()}
+
+ssim_metric = StructuralSimilarityIndexMeasure(data_range=1.0).to('cuda' if torch.cuda.is_available() else 'cpu')
+
+def ssim_reconstruction_loss(x_original, x_reconstructed, beta=0.1, gamma=0.5):
+    """
+    Combined MSE + L1 + SSIM reconstruction loss.
+    Args:
+        x_original: (B,C,H,W) or (B,H,W)
+        x_reconstructed: same shape
+    """
+    # --- ensure correct shape ---
+    if x_original.dim() == 2:  # (B,784)
+        side = int(x_original.size(1) ** 0.5)
+        x_original = x_original.view(-1, 1, side, side)
+        x_reconstructed = x_reconstructed.view(-1, 1, side, side)
+    elif x_original.dim() == 3:  # (B,H,W)
+        x_original = x_original.unsqueeze(1)
+        x_reconstructed = x_reconstructed.unsqueeze(1)
+
+    # --- normalize and clamp ---
+    x_original = torch.clamp(x_original, 0.0, 1.0)
+    x_reconstructed = torch.clamp(x_reconstructed, 0.0, 1.0)
+
+    # --- pixel-wise losses ---
+    mse = F.mse_loss(x_reconstructed, x_original)
+    l1  = F.l1_loss(x_reconstructed, x_original)
+
+    # --- structural similarity ---
+    ssim_val = ssim_metric(x_reconstructed, x_original)
+    ssim_loss = 1.0 - ssim_val
+
+    total = mse + beta * l1 + gamma * ssim_loss
+
+    return total, {
+        "mse": mse.item(),
+        "l1": l1.item(),
+        "ssim": ssim_val.item(),
+        "total": total.item()
+    }
+
 
 def conservative_reconstruction_loss(x_original, x_reconstructed, beta=0.1):
     x_original = x_original.view(x_original.size(0),-1)
