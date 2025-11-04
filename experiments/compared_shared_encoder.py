@@ -8,8 +8,21 @@ to isolate data-driven vs. model-driven domain gaps.
 import torch
 import matplotlib.pyplot as plt
 import os
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
 from metrics.coral import coral_distance
 from metrics.mmd import mmd_rbf
+
+def domain_probe(zM, zU, name):
+    X = torch.cat([zM, zU]).cpu().numpy()
+    y = torch.cat([
+        torch.zeros(len(zM)),  # MNIST = 0
+        torch.ones(len(zU))    # USPS = 1
+    ]).numpy()
+    clf = LogisticRegression(max_iter=1000).fit(X, y)
+    acc = accuracy_score(y, clf.predict(X))
+    print(f"[Domain probe on {name}] accuracy={acc*100:.2f}%")
+    return acc
 
 
 @torch.no_grad()
@@ -56,6 +69,9 @@ def compare_shared_encoder_alignment(
     # ------------------------------------------------------------
     z_sM, z_nM = encoder(xM)
     z_sU, z_nU = encoder(xU)
+
+    domain_probe(z_sM, z_sU, "signal")
+    domain_probe(z_nM, z_nU, "nuisance")
 
     with torch.no_grad():
         def stats(z_s, z_n, name):

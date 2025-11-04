@@ -17,7 +17,7 @@ decoder = SplitDecoder(latent_dim=latent_dim, output_dim=output_dim).to(device)
 probe = LinearProbe()
 
 # --- load your pretrained MNIST model ---
-ckpt = torch.load("artifacts/mnist/mnist_pretrained_usage_swap.pt", map_location=device)
+ckpt = torch.load("artifacts/mnist/mnist_pretrained_usage_swap_asym.pt", map_location=device)
 encoder.load_state_dict(ckpt["encoder"])
 decoder.load_state_dict(ckpt["decoder"])
 probe.load_state_dict(ckpt["probe"])

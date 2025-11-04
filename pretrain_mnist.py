@@ -6,12 +6,14 @@ using direct label supervision (no teacher model).
 """
 
 import torch
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import accuracy_score
 from data.loader import get_dataloader
 from models.models import SplitEncoder
 from models.models import SplitDecoder
 from models.models import LinearProbe
 from utils.seed import set_seed
-from utils.training import pretrain, pretrain_round_robin, pretrain_usage_swap
+from utils.training import pretrain, pretrain_round_robin, pretrain_usage_swap_asym
 
 set_seed(42)
 # ------------------------------------------------------------
@@ -60,7 +62,7 @@ pretrain(
     save_path="artifacts/mnist/mnist_pretrained_ssim.pt"
 )
 """
-pretrain_usage_swap(
+pretrain_usage_swap_asym(
     encoder, decoder, probe, train_loader, device,
 )
 # ------------------------------------------------------------
