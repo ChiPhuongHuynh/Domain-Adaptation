@@ -1,7 +1,7 @@
 import torch
 from data.loader import get_dataloader
-from models.models import SplitEncoder, SplitDecoder, LinearProbe
-from utils.aligner import finetune_entropy
+from models.models import SplitEncoder, SplitDecoder, LinearProbe, DomainProbe
+from utils.aligner import finetune_entropy, finetune_entropy_detach_stabilized
 from experiments.compared_shared_encoder import compare_shared_encoder_alignment
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -29,7 +29,7 @@ print("== Before finetune ==")
 _ = compare_shared_encoder_alignment(encoder, decoder, loader_M, loader_U, device, visualize=False)
 
 # --- short finetune ---
-finetune_entropy(
+finetune_entropy_detach_stabilized(
     encoder, decoder, probe,
     loader_mnist=loader_M,
     loader_usps=loader_U,

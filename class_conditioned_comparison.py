@@ -1,7 +1,9 @@
-from experiments.class_conditioned_alignment import class_conditioned_alignment
+from experiments.class_conditioned_alignment import class_conditioned_alignment, class_conditioned_alignment_shared
 from data.loader import get_dataloader
 from models.models import SplitEncoder
 from models.models import SplitDecoder
+from models.models import LinearProbe
+from utils.aligner import finetune_entropy, finetune_entropy_detach_stabilized
 import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -18,18 +20,20 @@ num_classes = 10
 
 encoder_M = SplitEncoder(input_dim=input_dim, latent_dim=latent_dim, signal_dim=signal_dim).to(device)
 decoder_M = SplitDecoder(latent_dim=latent_dim, output_dim=output_dim).to(device)
+probe = LinearProbe()
 
 encoder_U = SplitEncoder(input_dim=input_dim, latent_dim=latent_dim, signal_dim=signal_dim).to(device)
 decoder_U = SplitDecoder(latent_dim=latent_dim, output_dim=output_dim).to(device)
 
 encoder_M.load_state_dict(ckpt_M["encoder"])
 decoder_M.load_state_dict(ckpt_M["decoder"])
+probe.load_state_dict(ckpt_M["probe"])
 encoder_U.load_state_dict(ckpt_U["encoder"])
 decoder_U.load_state_dict(ckpt_U["decoder"])
 
 loader_M = get_dataloader("mnist", batch_size=256, train=False)
 loader_U = get_dataloader("usps", batch_size=256, train=False)
-
+"""
 results = class_conditioned_alignment(
     encoder_M, decoder_M,
     encoder_U, decoder_U,
@@ -37,4 +41,22 @@ results = class_conditioned_alignment(
     device=device,
     n_classes=10,
     n_samples=2000
+)
+"""
+print("== Before finetune ==")
+_ = class_conditioned_alignment_shared(
+    encoder_M, decoder_M, loader_M, loader_U, device
+)
+
+finetune_entropy_detach_stabilized(
+    encoder_M, decoder_M, probe,
+    loader_mnist=loader_M,
+    loader_usps=loader_U,
+    device=device,
+    lambda_cls=1.0, lambda_rec=0.5, lambda_ent=0.3,
+    epochs=3, lr=1e-4
+)
+print("== After finetune ==")
+_ = class_conditioned_alignment_shared(
+    encoder_M, decoder_M, loader_M, loader_U, device
 )

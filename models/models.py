@@ -41,3 +41,15 @@ class LinearProbe(nn.Module):
     
     def forward(self, z_sig):
         return self.net(z_sig)
+
+class DomainProbe(nn.Module):
+    def __init__(self, in_dim, hidden_dim=64):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 2)  # binary domain classification: MNIST vs USPS
+        )
+    def forward(self, x):
+        return self.net(x)
+    

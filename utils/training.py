@@ -493,26 +493,43 @@ def _set_requires_grad(module, flag: bool):
     for p in module.parameters():
         p.requires_grad = flag
 
+@torch.no_grad()
+def _probe_acc(probe, z_s, y):
+    pred = probe(z_s).argmax(dim=1)
+    return (pred == y).float().mean().item()
+
 def pretrain_usage_swap_asym(
-    encoder, decoder, probe, dataloader, device,
-    lambda_cls=1.0,          # keep this dominant
-    lambda_rec=0.5,          # recon guard
-    lambda_use=0.05,         # swap usage (small)
-    lambda_cov=0.02,         # very small, *asymmetric* decorrelation
-    lambda_preserve=1.0,     # latent preservation
+    encoder,
+    decoder,
+    probe,
+    dataloader,
+    device,
+    # core weights
+    lambda_cls=1.0,
+    lambda_rec=0.5,
+    lambda_preserve=1.0,
     lambda_cycle_nuisance=1.0,
-    lambda_proj=0.1,
-    usage_margin=0.02,
-    warmup_epochs=2,         # brief classifier warmup
+    # auxiliary (targets; will be ramped)
+    lambda_proj_target=0.02,
+    lambda_cov_asym_target=0.01,
+    lambda_use_target=0.10,
+    usage_margin=0.04,
+    # decoder-side regularization
+    dropout_p=0.05,
+    noise_std=0.01,
+    # schedules
+    warmup_epochs=2,            # classifier-only warmup
+    ramp_epochs=5,              # ramp-in period for aux losses
     epochs=20,
     lr=1e-3,
-    save_path="mnist_pretrained_usage_swap_asym.pt",
+    save_path="artifacts/mnist/mnist_pretrained_usage_swap_asym.pt",
 ):
     """
-    - Warmup: train encoder+probe on L_cls only (stabilize z_s).
-    - Main: add SSIM recon, swap-usage loss (flows to z_n+decoder only),
-            and *asymmetric* decorrelation: cov( stopgrad(z_s), z_n ).
-      This prevents the cov term from fighting the classifier over z_s.
+    Warmup + scheduled asymmetric training:
+
+    Stage A (warmup): optimize encoder+probe with L_cls only (stabilize z_s).
+    Stage B (main):   add L_rec (SSIM), L_use (swap), L_cov_asym (cov(stopgrad(z_s), z_n)),
+                      and a tiny L_proj; all three are linearly ramped in over `ramp_epochs`.
     """
 
     encoder.train(); decoder.train(); probe.train()
@@ -525,17 +542,18 @@ def pretrain_usage_swap_asym(
     )
 
     # -----------------------
-    # (A) Warmup classifier
+    # Stage A: warmup (L_cls only)
     # -----------------------
     for ep in range(warmup_epochs):
         total_loss = total_cls = 0.0
+        total_acc = 0.0
         for x, y in tqdm(dataloader, desc=f"Warmup {ep+1}/{warmup_epochs}"):
             x, y = x.to(device), y.to(device)
-            z_s, z_n = encoder(x)
+            z_s, _ = encoder(x)
             logits = probe(z_s)
             L_cls = F.cross_entropy(logits, y)
-            loss = lambda_cls * L_cls
 
+            loss = lambda_cls * L_cls
             opt.zero_grad(set_to_none=True)
             loss.backward()
             opt.step()
@@ -543,14 +561,27 @@ def pretrain_usage_swap_asym(
             b = x.size(0)
             total_loss += loss.item() * b
             total_cls  += L_cls.item() * b
-        n = len(dataloader.dataset)
-        print(f"[Warmup {ep+1}/{warmup_epochs}] Loss={total_loss/n:.4f} L_cls={total_cls/n:.4f}")
+            total_acc  += _probe_acc(probe, z_s, y) * b
 
-    # --------------------------------
-    # (B) Main training with asym cov
-    # --------------------------------
+        n = len(dataloader.dataset)
+        print(f"[Warmup {ep+1}/{warmup_epochs}] "
+              f"Loss={total_loss/n:.4f} "
+              f"L_cls={total_cls/n:.4f} "
+              f"ProbeAcc={total_acc/n:.4f}")
+
+    # -----------------------
+    # Stage B: main training
+    # -----------------------
     for epoch in range(epochs):
-        total_loss = total_cls = total_rec = total_use = total_cov = 0.0
+        # linear ramps 0→target over ramp_epochs
+        ramp = min(1.0, (epoch + 1) / float(ramp_epochs))
+        lambda_use       = ramp * lambda_use_target
+        lambda_cov_asym  = ramp * lambda_cov_asym_target
+        lambda_proj      = ramp * lambda_proj_target
+
+        total_loss = total_cls = total_rec = total_use = total_cov = total_proj = 0.0
+        total_dswap = 0.0
+        total_acc = 0.0
 
         for x, y in tqdm(dataloader, desc=f"Epoch {epoch+1}/{epochs}"):
             x, y = x.to(device), y.to(device)
@@ -558,70 +589,90 @@ def pretrain_usage_swap_asym(
             # Encode
             z_s, z_n = encoder(x)
 
-            # (1) Classification on z_s (drives encoder z_s + probe)
+            # (1) Supervised classification on z_s
             logits = probe(z_s)
             L_cls = F.cross_entropy(logits, y)
 
-            # (2) Reconstruction (use z_s.detach() so recon path doesn’t fight classifier)
-            z_n_noisy = z_n + 0.01 * torch.randn_like(z_n)
-            x_hat = decoder(torch.cat([z_s.detach(), z_n_noisy], dim=1))
-            L_rec, _ = ssim_reconstruction_loss(x.view(x.size(0), -1), x_hat)  # accepts (B,1,H,W) vs flat internally
+            # --- track probe accuracy early to catch collapses ---
+            with torch.no_grad():
+                acc = _probe_acc(probe, z_s, y)
 
-            # Re-encode recon to keep latents stable
+            # (2) Decoder-side regularization (only in recon path)
+            z_s_dec = z_s.detach()
+            z_s_dec = F.dropout(z_s_dec, p=dropout_p, training=True)
+            z_s_dec = z_s_dec + noise_std * torch.randn_like(z_s_dec)
+            z_n_noisy = z_n + noise_std * torch.randn_like(z_n)
+
+            # (3) Reconstructions
+            x_hat = decoder(torch.cat([z_s_dec, z_n_noisy], dim=1))
+            with torch.no_grad():
+                perm = torch.randperm(z_n.size(0), device=device)
+                z_n_shuf = z_n[perm]
+            x_swap = decoder(torch.cat([z_s_dec, z_n_shuf], dim=1))
+
+            # SSIM recon (use flat input to trigger internal reshape)
+            L_rec, _ = ssim_reconstruction_loss(x.view(x.size(0), -1), x_hat)
+
+            # Re-encode recon for preservation
             z_s_p, z_n_p = encoder(x_hat)
             L_preserve = torch.norm(z_s - z_s_p, dim=1).mean()
             L_cycle_nuisance = torch.norm(z_n_p - z_n, dim=1).mean()
 
-            # (3) Asymmetric decorrelation:
-            #     Only update z_n to reduce correlation with the *fixed* z_s.
-            with torch.no_grad():
-                z_s_ng = z_s.clone()
-            z_sn = normalize_batch(z_s_ng)         # stop-grad z_s
-            z_nn = normalize_batch(z_n)            # gradients flow into z_n
-            L_cov_asym = cross_covariance_norm(z_sn, z_nn)
+            # (4) Usage loss (encourage decoder to actually use z_n)
+            dswap = (x_hat - x_swap).abs().mean()
+            L_use = torch.clamp(usage_margin - dswap, min=0.0)
 
-            # (4) Projection penalty (light)
-            L_proj = projection_penalty(z_s.detach(), z_n)  # also asym: don’t disturb z_s
+            # (5) Asymmetric decorrelation (only z_n gets gradients)
+            z_s_norm = normalize_batch(z_s.detach())
+            z_n_norm = normalize_batch(z_n)
+            L_cov_asym = cross_covariance_norm(z_s_norm, z_n_norm)
 
-            # (5) Nuisance usage (swap) — only z_n+decoder should bear this
-            with torch.no_grad():
-                perm = torch.randperm(z_n.size(0), device=device)
-                z_n_shuf = z_n[perm]
-            x_swap = decoder(torch.cat([z_s.detach(), z_n_shuf], dim=1))
-            L_swap = (x_hat - x_swap).abs().mean()
-            L_use = torch.clamp(usage_margin - L_swap, min=0.0)
+            # (6) Tiny projection penalty (ramped; can keep very small)
+            L_proj = projection_penalty(z_s.detach(), z_n)
 
-            # Total loss (z_s is primarily steered by L_cls; z_n/decoder by L_rec/L_use/L_cov)
+            # (7) Total loss with scheduled auxiliaries
             loss = (
                 lambda_cls * L_cls
-                + lambda_rec * L_rec
-                + lambda_preserve * L_preserve
-                + lambda_cycle_nuisance * L_cycle_nuisance
-                + lambda_proj * L_proj
-                + lambda_use * L_use
-                + lambda_cov * L_cov_asym
+              + lambda_rec * L_rec
+              + lambda_preserve * L_preserve
+              + lambda_cycle_nuisance * L_cycle_nuisance
+              + lambda_use * L_use
+              + lambda_cov_asym * L_cov_asym
+              + lambda_proj * L_proj
             )
 
+            # Optimize
             opt.zero_grad(set_to_none=True)
             loss.backward()
             torch.nn.utils.clip_grad_norm_(encoder.parameters(), 5.0)
             opt.step()
 
+            # Accumulators
             b = x.size(0)
-            total_loss += loss.item() * b
-            total_cls  += L_cls.item() * b
-            total_rec  += L_rec.item() * b
-            total_use  += L_use.item() * b
-            total_cov  += L_cov_asym.item() * b
+            total_loss  += loss.item() * b
+            total_cls   += L_cls.item() * b
+            total_rec   += L_rec.item() * b
+            total_use   += L_use.item() * b
+            total_cov   += L_cov_asym.item() * b
+            total_proj  += L_proj.item() * b
+            total_dswap += dswap.item() * b
+            total_acc   += acc * b
 
         n = len(dataloader.dataset)
-        print(f"[Pretrain+Swap(Asym) {epoch+1}/{epochs}] "
-              f"Loss={total_loss/n:.4f} "
-              f"L_cls={total_cls/n:.4f} "
-              f"L_rec={total_rec/n:.4f} "
-              f"L_use={total_use/n:.4f} "
-              f"L_cov(asym)={total_cov/n:.4f}")
+        print(
+            f"[Pretrain+Swap(Asym) {epoch+1}/{epochs}] "
+            f"Loss={total_loss/n:.4f} "
+            f"L_cls={total_cls/n:.4f} "
+            f"L_rec={total_rec/n:.4f} "
+            f"L_use={total_use/n:.4f} "
+            f"L_cov(asym)={total_cov/n:.4f} "
+            f"L_proj={total_proj/n:.4f} "
+            f"Δswap={total_dswap/n:.4f} "
+            f"ProbeAcc={total_acc/n:.4f} "
+            f"(ramp={ramp:.2f})"
+        )
 
+    # Save
     torch.save({
         "encoder": encoder.state_dict(),
         "decoder": decoder.state_dict(),

@@ -100,3 +100,97 @@ def class_conditioned_alignment(
     print(f"Avg: CORAL={results['coral_avg']:.4f}  MMD={results['mmd_avg']:.4f}")
 
     return results
+
+@torch.no_grad()
+def class_conditioned_alignment_shared(
+    encoder,
+    decoder,
+    loader_mnist,
+    loader_usps,
+    device,
+    n_classes=10,
+    n_samples=1000,
+):
+    """
+    Class-conditioned CORAL and MMD using a *shared encoder/decoder*.
+    Each class uses its own shared nuisance mean for reconstruction.
+
+    Args:
+        encoder, decoder: shared models (trained on MNIST)
+        loader_mnist, loader_usps: DataLoaders for MNIST & USPS
+        device: torch device
+        n_classes: number of label classes (default=10)
+        n_samples: number of samples to draw from each domain
+
+    Returns:
+        dict with per-class and average CORAL/MMD
+    """
+
+    # ------------------------------------------------------------
+    # 1. Collect latents
+    # ------------------------------------------------------------
+    def collect_latents(loader, max_samples):
+        zs_s, zs_n, ys = [], [], []
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            z_s, z_n = encoder(x)
+            zs_s.append(z_s)
+            zs_n.append(z_n)
+            ys.append(y)
+            if len(torch.cat(zs_s)) >= max_samples:
+                break
+        return (
+            torch.cat(zs_s)[:max_samples],
+            torch.cat(zs_n)[:max_samples],
+            torch.cat(ys)[:max_samples],
+        )
+
+    z_sM, z_nM, yM = collect_latents(loader_mnist, n_samples)
+    z_sU, z_nU, yU = collect_latents(loader_usps, n_samples)
+
+    results = {"coral_per_class": [], "mmd_per_class": []}
+
+    # ------------------------------------------------------------
+    # 2. Per-class shared nuisance + alignment metrics
+    # ------------------------------------------------------------
+    for c in tqdm(range(n_classes), desc="Class-conditioned (shared encoder)"):
+        idxM = (yM == c)
+        idxU = (yU == c)
+        if idxM.sum() == 0 or idxU.sum() == 0:
+            continue
+
+        z_sM_c, z_nM_c = z_sM[idxM], z_nM[idxM]
+        z_sU_c, z_nU_c = z_sU[idxU], z_nU[idxU]
+
+        # Compute class-wise mean nuisance (across both domains)
+        mean_nM_c = z_nM_c.mean(dim=0, keepdim=True)
+        mean_nU_c = z_nU_c.mean(dim=0, keepdim=True)
+        shared_n_c = 0.5 * (mean_nM_c + mean_nU_c)
+
+        # Reconstruct both domains with shared nuisance
+        xM_shared = decoder(torch.cat([z_sM_c, shared_n_c.repeat(len(z_sM_c), 1)], dim=1))
+        xU_shared = decoder(torch.cat([z_sU_c, shared_n_c.repeat(len(z_sU_c), 1)], dim=1))
+
+        # Flatten for metric computation
+        flat = lambda t: t.view(t.size(0), -1)
+
+        coral_c = coral_distance(flat(xM_shared), flat(xU_shared))
+        mmd_c = mmd_rbf(flat(xM_shared), flat(xU_shared))
+
+        results["coral_per_class"].append(coral_c.item())
+        results["mmd_per_class"].append(mmd_c.item())
+
+    # ------------------------------------------------------------
+    # 3. Summaries
+    # ------------------------------------------------------------
+    coral_avg = float(torch.tensor(results["coral_per_class"]).mean())
+    mmd_avg = float(torch.tensor(results["mmd_per_class"]).mean())
+    results["coral_avg"] = coral_avg
+    results["mmd_avg"] = mmd_avg
+
+    print("\n=== Class-Conditioned Alignment (Shared Encoder) ===")
+    for i, (c_val, m_val) in enumerate(zip(results["coral_per_class"], results["mmd_per_class"])):
+        print(f"Class {i:2d}: CORAL={c_val:.4f}  MMD={m_val:.4f}")
+    print(f"Avg: CORAL={coral_avg:.4f}  MMD={mmd_avg:.4f}")
+
+    return results

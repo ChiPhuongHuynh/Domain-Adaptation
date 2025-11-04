@@ -81,4 +81,4 @@ with torch.no_grad():
         correct += (preds == y).sum().item()
         total += y.size(0)
 
-print(f"✅ USPS Probe accuracy on test set: {100*correct/total:.2f}%")
+print(f"✅ MNIST Probe accuracy on test set: {100*correct/total:.2f}%")

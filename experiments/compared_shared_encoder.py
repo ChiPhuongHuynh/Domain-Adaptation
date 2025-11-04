@@ -9,6 +9,9 @@ import torch
 import matplotlib.pyplot as plt
 import os
 from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import StratifiedKFold
+from sklearn.metrics import accuracy_score, roc_auc_score
+import numpy as np
 from sklearn.metrics import accuracy_score
 from metrics.coral import coral_distance
 from metrics.mmd import mmd_rbf
@@ -23,6 +26,39 @@ def domain_probe(zM, zU, name):
     acc = accuracy_score(y, clf.predict(X))
     print(f"[Domain probe on {name}] accuracy={acc*100:.2f}%")
     return acc
+
+
+def domain_linear_probe(z_mnist, z_usps, seed=0, folds=5):
+    """Linear probe: predict domain (MNIST=0 vs USPS=1) from z."""
+    X = torch.cat([z_mnist, z_usps]).detach().cpu().numpy()
+    y = np.concatenate([
+        np.zeros(len(z_mnist)), np.ones(len(z_usps))
+    ])
+
+    skf = StratifiedKFold(n_splits=folds, shuffle=True, random_state=seed)
+    accs, aucs = [], []
+    for tr, te in skf.split(X, y):
+        clf = LogisticRegression(
+            penalty="l2", solver="liblinear", max_iter=200
+        )
+        clf.fit(X[tr], y[tr])
+        p = clf.predict_proba(X[te])[:, 1]
+        aucs.append(roc_auc_score(y[te], p))
+        accs.append(accuracy_score(y[te], (p > 0.5).astype(int)))
+    return np.mean(accs), np.mean(aucs)
+
+
+def collect_latents(encoder, loader, device, domain_label):
+    zs, zn, ys, doms = [], [], [], []
+    with torch.no_grad():
+        for x, y in loader:
+            x, y = x.to(device), y.to(device)
+            z_s, z_n = encoder(x)
+            zs.append(z_s.cpu())
+            zn.append(z_n.cpu())
+            ys.append(y.cpu())
+            doms.append(torch.full_like(y.cpu(), domain_label))
+    return torch.cat(zs), torch.cat(zn), torch.cat(ys), torch.cat(doms)
 
 
 @torch.no_grad()
@@ -70,8 +106,10 @@ def compare_shared_encoder_alignment(
     z_sM, z_nM = encoder(xM)
     z_sU, z_nU = encoder(xU)
 
-    domain_probe(z_sM, z_sU, "signal")
-    domain_probe(z_nM, z_nU, "nuisance")
+    acc_s, auc_s = domain_linear_probe(z_sM, z_sU)
+    acc_n, auc_n = domain_linear_probe(z_nM, z_nU)
+    print(f"[Domain probe on signal] acc={acc_s*100:.2f}% | AUC={auc_s:.3f}")
+    print(f"[Domain probe on nuisance] acc={acc_n*100:.2f}% | AUC={auc_n:.3f}")
 
     with torch.no_grad():
         def stats(z_s, z_n, name):
