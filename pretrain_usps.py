@@ -11,7 +11,7 @@ from models.models import SplitEncoder
 from models.models import SplitDecoder
 from models.models import LinearProbe
 from utils.seed import set_seed
-from utils.training import pretrain
+from utils.training import pretrain_usage_swap_asym
 
 set_seed(42)
 # ------------------------------------------------------------
@@ -37,26 +37,18 @@ num_classes = 10
 
 encoder = SplitEncoder(input_dim=input_dim, latent_dim=latent_dim, signal_dim=signal_dim).to(device)
 decoder = SplitDecoder(latent_dim=latent_dim, output_dim=output_dim).to(device)
-probe   = LinearProbe(signal_dim=signal_dim, n_classes=num_classes).to(device)
+probe   = LinearProbe(input_dim=signal_dim, n_classes=num_classes).to(device)
 
 # ------------------------------------------------------------
 # 4. Training
 # ------------------------------------------------------------
-pretrain(
+pretrain_usage_swap_asym(
     encoder=encoder,
     decoder=decoder,
     probe=probe,
     dataloader=train_loader,
     device=device,
-    lambda_cls=1.0,
-    lambda_rec=0.5,
-    lambda_preserve=1.0,
-    lambda_cov=0.5,
-    lambda_proj=0.1,
-    lambda_cov_cycle=0.5,
-    lambda_cycle_nuisance=1.0,
-    epochs=20,
-    save_path="artifacts/usps/usps_pretrained.pt"
+    save_path="artifacts/usps/usps_pretrained_usage_swap_asym.pt"
 )
 
 # ------------------------------------------------------------
