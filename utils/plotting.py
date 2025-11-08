@@ -1,6 +1,7 @@
 import torch
 import matplotlib.pyplot as plt
 from sklearn.manifold import TSNE
+import seaborn as sns
 from tqdm import tqdm
 import os
 
@@ -121,6 +122,112 @@ def plot_latent_tsne_grid(
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
         plt.savefig(save_path, dpi=300)
+        print(f"✅ t-SNE plot saved to {save_path}")
+    else:
+        plt.show()
+
+    plt.close(fig)
+
+def plot_latent_tsne_before_after(
+    encoder_pre,
+    encoder_finetuned,
+    dataloader,
+    device,
+    save_path=None,
+    n_samples=1000,
+    point_size=8,
+    perplexity=30,
+    random_state=42,
+):
+    """
+    Compare t-SNE embeddings of signal and nuisance latents
+    before vs. after finetuning.
+
+    Layout:
+        Row 1: Pretrained encoder (z_s, z_n)
+        Row 2: Finetuned encoder (z_s, z_n)
+    """
+
+    # -------------------------
+    # 1. Collect samples
+    # -------------------------
+    xs, ys = [], []
+    for x, y in dataloader:
+        xs.append(x)
+        ys.append(y)
+        if len(torch.cat(xs)) >= n_samples:
+            break
+    x = torch.cat(xs)[:n_samples].to(device)
+    y = torch.cat(ys)[:n_samples].cpu().numpy()
+
+    # -------------------------
+    # 2. Encode using both encoders
+    # -------------------------
+    with torch.no_grad():
+        z_s_pre, z_n_pre = encoder_pre(x)
+        z_s_post, z_n_post = encoder_finetuned(x)
+
+    # to CPU numpy
+    z_s_pre, z_n_pre = z_s_pre.cpu().numpy(), z_n_pre.cpu().numpy()
+    z_s_post, z_n_post = z_s_post.cpu().numpy(), z_n_post.cpu().numpy()
+
+    # -------------------------
+    # 3. Joint t-SNE (shared projection space)
+    # -------------------------
+    print("[t-SNE] Running joint projection...")
+    all_z = torch.cat(
+        [
+            torch.tensor(z_s_pre),
+            torch.tensor(z_n_pre),
+            torch.tensor(z_s_post),
+            torch.tensor(z_n_post),
+        ],
+        dim=0,
+    ).numpy()
+
+    tsne = TSNE(
+        n_components=2, perplexity=perplexity, random_state=random_state, init="pca"
+    )
+    all_z_2d = tsne.fit_transform(all_z)
+
+    N = len(z_s_pre)
+    Z_s_pre = all_z_2d[:N]
+    Z_n_pre = all_z_2d[N:2*N]
+    Z_s_post = all_z_2d[2*N:3*N]
+    Z_n_post = all_z_2d[3*N:4*N]
+
+    # -------------------------
+    # 4. Plot 2×2 grid
+    # -------------------------
+    sns.set_style("white")
+    palette = sns.color_palette("Set2", len(set(y)))
+
+    fig, axes = plt.subplots(2, 2, figsize=(8, 7))
+    plt.subplots_adjust(hspace=0.25, wspace=0.25)
+
+    def scatter(ax, Z, title):
+        ax.scatter(Z[:,0], Z[:,1], c=[palette[i] for i in y],
+                   s=point_size, alpha=0.8, linewidth=0)
+        ax.set_title(title, fontsize=11)
+        ax.set_xticks([]); ax.set_yticks([])
+        for spine in ax.spines.values():
+            spine.set_visible(False)
+        ax.set_facecolor('white')
+
+    scatter(axes[0,0], Z_s_pre, "Signal (Pretrain)")
+    scatter(axes[0,1], Z_n_pre, "Nuisance (Pretrain)")
+    scatter(axes[1,0], Z_s_post, "Signal (Finetune)")
+    scatter(axes[1,1], Z_n_post, "Nuisance (Finetune)")
+
+    fig.suptitle("t-SNE of Latent Spaces — Pretrain vs Finetune", fontsize=13)
+    plt.tight_layout(rect=[0,0,1,0.96])
+
+    # -------------------------
+    # 5. Save or show
+    # -------------------------
+    if save_path:
+        os.makedirs(os.path.dirname(save_path), exist_ok=True)
+        plt.savefig(save_path, dpi=300, bbox_inches="tight")
         print(f"✅ t-SNE plot saved to {save_path}")
     else:
         plt.show()
