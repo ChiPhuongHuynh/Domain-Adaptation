@@ -200,7 +200,7 @@ def plot_latent_tsne_before_after(
     # 4. Plot 2×2 grid
     # -------------------------
     sns.set_style("white")
-    palette = sns.color_palette("Set2", len(set(y)))
+    palette = palette = sns.color_palette("tab20", 10)
 
     fig, axes = plt.subplots(2, 2, figsize=(8, 7))
     plt.subplots_adjust(hspace=0.25, wspace=0.25)
@@ -220,7 +220,14 @@ def plot_latent_tsne_before_after(
     scatter(axes[1,1], Z_n_post, "Nuisance (Finetune)")
 
     fig.suptitle("t-SNE of Latent Spaces — Pretrain vs Finetune", fontsize=13)
+    """
     plt.tight_layout(rect=[0,0,1,0.96])
+    handles = [plt.Line2D([], [], marker='o', color=palette[i],
+                      linestyle='', markersize=6)
+           for i in range(10)]
+    labels = [str(i) for i in range(10)]
+    fig.legend(handles, labels, loc='lower center', ncol=10, frameon=False)
+    """
 
     # -------------------------
     # 5. Save or show
