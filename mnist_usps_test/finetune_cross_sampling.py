@@ -1,6 +1,6 @@
 import torch
 from data.loader import get_dataloader
-from models.models import SplitEncoder, SplitDecoder, LinearProbe, DomainProbe
+from models.mnist_usps.models import SplitEncoder, SplitDecoder, LinearProbe, DomainProbe
 from utils.aligner import finetune_entropy, finetune_entropy_detach_stabilized
 from experiments.compared_shared_encoder import compare_shared_encoder_alignment
 

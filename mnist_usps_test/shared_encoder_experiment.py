@@ -1,7 +1,7 @@
 from experiments.compared_shared_encoder import compare_shared_encoder_alignment
 from data.loader import get_dataloader
-from models.models import SplitEncoder
-from models.models import SplitDecoder
+from models.mnist_usps.models import SplitEncoder
+from models.mnist_usps.models import SplitDecoder
 import torch
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

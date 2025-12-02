@@ -2,3 +2,7 @@ align
 data/__pycache__
 data/mnist
 data/usps
+chexlocalize_download
+*.pt
+*.pth
+checkpoints/

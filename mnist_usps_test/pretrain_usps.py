@@ -7,9 +7,9 @@ using direct label supervision (no teacher model).
 
 import torch
 from data.loader import get_dataloader
-from models.models import SplitEncoder
-from models.models import SplitDecoder
-from models.models import LinearProbe
+from models.mnist_usps.models import SplitEncoder
+from models.mnist_usps.models import SplitDecoder
+from models.mnist_usps.models import LinearProbe
 from utils.seed import set_seed
 from utils.training import pretrain_usage_swap_asym
 
